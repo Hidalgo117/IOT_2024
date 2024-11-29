@@ -1,0 +1,151 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ESP32Servo.h>  
+
+// Configuración WiFi y MQTT
+const char* ssid = "...";          
+const char* password = "...";      
+const char* mqtt_server = "mqtt.eclipseprojects.io";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+HardwareSerial ArduinoSerial(2);
+
+#define RX2 16  // RX2 (GPIO16)
+#define TX2 17  // TX2 (GPIO17)
+
+// Configuración del servo
+Servo myservo;               // Crea el objeto Servo
+const int servoPin = 4;      // Pin del servo (GPIO4)
+const int inicial = 140;     // Posición inicial
+const int dispensar = 60;    // Posición de dispensado
+
+// Configuración del sensor de agua
+const int waterSensorPin = 34;  // Pin analógico para el sensor de agua (GPIO34)
+
+// Variables para la temporización del servo 
+unsigned long lastServoMoveTime = 0;
+const long servoMoveDelay = 3000;  // Tiempo para mover el servo y luego volver (3 segundos)
+
+// Variables para recibir datos del Arduino
+String mensajeArduino = "";   // Variable para almacenar el mensaje recibido desde el Arduino
+
+void setup_wifi() {
+  delay(10);
+  Serial.begin(115200);
+  Serial.println();
+  Serial.print("Conectando a ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("WiFi conectado");
+  Serial.print("Dirección IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Mensaje recibido [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  String message;
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.println(message);
+
+  // Verifica si el payload es "ACTIVADO"
+  if (message == "ACTIVADO") {
+    moverServo();  // Llama a la función para mover el servo
+  }
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Intentando conectar al servidor MQTT...");
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str())) {
+      Serial.println("Conectado");
+      client.subscribe("iot/water/st/2024");  // Suscribirse al topic
+      client.subscribe("iot/servo/st/2024");
+      client.subscribe("iot/bomba/st/2024");
+    } else {
+      Serial.print("Falló, rc=");
+      Serial.print(client.state());
+      Serial.println(" Reintentando en 5 segundos...");
+      delay(5000);
+    }
+  }
+}
+
+// Función para mover el servo y publicar el mensaje MQTT
+void moverServo() {
+  Serial.println("Moviendo servo...");
+  myservo.write(dispensar);  // Mueve el servo a la posición de dispensado
+  lastServoMoveTime = millis(); // Guarda el tiempo en el que se movió el servo
+  client.publish("iot/servo/st/2024", "SERVO_ACTIVADO");
+  Serial.println("Mensaje MQTT enviado: SERVO_ACTIVADO");
+}
+
+// Función para leer el sensor de agua y publicar el valor
+void leerSensorAgua() {
+  int sensorValue = analogRead(waterSensorPin);  // Lee el valor del sensor de agua
+  Serial.print("Valor del sensor de agua: ");
+  Serial.println(sensorValue);
+
+  // Publicar el valor del sensor en MQTT
+  String payload = String(sensorValue);
+  client.publish("iot/water/st/2024", payload.c_str());
+}
+
+void setup() {
+  Serial.begin(115200);  // Inicializar comunicación serial con el PC
+  setup_wifi();          // Conectar a la red Wi-Fi
+  ArduinoSerial.begin(9600, SERIAL_8N1, RX2, TX2);  // Comunicación con el Arduino UNO
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+
+  myservo.attach(servoPin);  // Conecta el servo al pin GPIO4
+  myservo.write(inicial);    // Configura el servo en su posición inicial
+
+  Serial.println("ESP32 listo.");
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();  // Reconecta si el cliente MQTT se desconecta
+  }
+  client.loop();
+
+  // Leer el mensaje del Arduino y verificar si la bomba debe activarse
+  if (ArduinoSerial.available()) {
+    mensajeArduino = ArduinoSerial.readStringUntil('\n');  // Lee el mensaje del Arduino
+    Serial.print("Mensaje recibido desde Arduino: ");
+    Serial.println(mensajeArduino);
+
+    // Si el mensaje es "BOMBA ACTIVADA", publicar el mensaje MQTT
+    if (mensajeArduino.length() > 0) {
+      client.publish("iot/bomba/st/2024", "BOMBA_ACTIVADA");
+      Serial.println("Mensaje MQTT enviado: BOMBA_ACTIVADA");
+    }
+  }
+
+  // Leer el sensor de agua y publicar su valor cada 5 segundos
+  static unsigned long lastWaterReadTime = 0;
+  if (millis() - lastWaterReadTime >= 5000) {
+    leerSensorAgua();
+    lastWaterReadTime = millis();
+  }
+
+  // Controlar el tiempo de movimiento del servo y devolverlo a la posición inicial
+  if (millis() - lastServoMoveTime >= servoMoveDelay) {
+    myservo.write(inicial);  // Regresa el servo a la posición inicial después de 3 segundos
+  }
+}

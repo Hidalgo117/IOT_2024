@@ -1,0 +1,65 @@
+#include <SoftwareSerial.h>
+
+SoftwareSerial esp32Serial(4, 5);
+
+int TRIG = 3;   // Pin para el Trigger
+int ECO = 2;    // Pin para el Echo
+int RELAY = 7;  // Pin para el relé
+int DURACION;
+int DISTANCIA;
+
+// Variables para control de tiempos
+unsigned long tiempoInicioBomba = 0;
+unsigned long tiempoDesactivacionSensor = 0;
+bool bombaActiva = false;
+bool sensorDesactivado = false;
+
+void setup() {
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECO, INPUT);
+  pinMode(RELAY, OUTPUT);
+  digitalWrite(RELAY, LOW); // Apagar la bomba inicialmente
+  esp32Serial.begin(9600);
+}
+
+void loop() {
+  unsigned long tiempoActual = millis();
+
+  // Si el sensor está desactivado, verificar si han pasado 15 segundos para reactivarlo
+  if (sensorDesactivado && (tiempoActual - tiempoDesactivacionSensor >= 10000)) {
+    sensorDesactivado = false;
+  }
+
+  // Si el sensor está desactivado, no procesar lecturas
+  if (sensorDesactivado) {
+    return;
+  }
+
+  // Medición de distancia con el sensor ultrasónico
+  digitalWrite(TRIG, LOW);
+  delayMicroseconds(2); // Asegurar un pulso limpio
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(10); // Pulso de 10us para activar el sensor
+  digitalWrite(TRIG, LOW);
+
+  DURACION = pulseIn(ECO, HIGH); // Leer el tiempo del eco
+  DISTANCIA = DURACION / 58.2;  // Convertir el tiempo a distancia
+
+  // Activar la bomba si la distancia es 30 cm o menor y la bomba no está activa
+  if (DISTANCIA > 0 && DISTANCIA <= 30 && !bombaActiva) {
+    esp32Serial.println("BOMBA");
+    digitalWrite(RELAY, HIGH);
+    tiempoInicioBomba = tiempoActual; // Registrar el tiempo de activación
+    bombaActiva = true;
+    sensorDesactivado = true; // Desactivar el sensor
+    tiempoDesactivacionSensor = tiempoActual; // Registrar tiempo de desactivación del sensor
+  }
+
+  // Si la bomba está activa, apagarla después de 10 segundos
+  if (bombaActiva && (tiempoActual - tiempoInicioBomba >= 10000)) {
+    digitalWrite(RELAY, LOW);  // Apagar la bomba
+    bombaActiva = false;
+  }
+
+  delay(200); // Retardo entre lecturas
+}
